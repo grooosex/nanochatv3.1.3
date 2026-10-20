@@ -25,10 +25,13 @@ import { foldWindow, genPhaseLabel, stripStatus } from "@/lib/engine";
 import { memoryCaughtUp } from "@/lib/chat-memory";
 import { splitDialogue, stripSpeakerPrefix } from "@/lib/rp-text";
 import { parseReplyMarkup, type ReplyFold } from "@/lib/reply-markup";
-import type { Chat, ChatMessage, GenImage, ImageGenSource, MultiMode, PromptInsertMode } from "@/lib/types";
+import type { Chat, ChatMessage, GenImage, ImageGenSource, MultiMode, PromptInsertMode, UserShot } from "@/lib/types";
+import { CHAT_SHOT_MAX, messageShots } from "@/lib/user-markup";
 import { attachImage, branchFrom, cancelImage, cancelMemory, editMessage, regenMessage, retryMemory, sendUser } from "./chat-actions";
 import { ChatModelSelect } from "./ModelSelect";
 import { ChatAvatar, ExpandSelect, Modal, TextArea, useCooldown, ZoomImg } from "./ui-kit";
+
+const noShots: UserShot[] = [];
 
 export function ChatPane({ chat }: { chat: Chat }) {
   const cooldownUntil = useApp((s) => s.settings.cooldownUntil);
@@ -40,22 +43,7 @@ export function ChatPane({ chat }: { chat: Chat }) {
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const [atBottom, setAtBottom] = useState(true);
   const draft = useApp((s) => s.composerDrafts[chat.id] ?? "");
-  const shot = useApp((s) => s.composerShots[chat.id]);
-  const [shotUrl, setShotUrl] = useState<string | null>(null);
-
-  useEffect(() => {
-    if (!shot?.blobId) {
-      setShotUrl(null);
-      return;
-    }
-    let dead = false;
-    void imageUrl(shot.blobId).then((u) => {
-      if (!dead) setShotUrl(u);
-    });
-    return () => {
-      dead = true;
-    };
-  }, [shot?.blobId]);
+  const shots = useApp((s) => s.composerShots[chat.id] ?? noShots);
 
   useEffect(() => {
     const el = scroller.current;
@@ -79,13 +67,10 @@ export function ChatPane({ chat }: { chat: Chat }) {
 
   const startUserEdit = (msg: ChatMessage) => {
     const backup = editUser ? editUser.backup : draft;
-    const shotBackup = editUser ? editUser.shotBackup : shot?.blobId ? { blobId: shot.blobId, i2i: shot.i2i } : null;
+    const shotBackup = editUser ? editUser.shotBackup : shots.length ? shots.map((s) => ({ ...s })) : null;
     useApp.getState().setUI({ editUserMsg: { chatId: chat.id, msgId: msg.id, backup, shotBackup } });
     useApp.getState().setComposerDraft(chat.id, msg.content);
-    useApp.getState().setComposerShot(
-      chat.id,
-      msg.userImageBlobId ? { blobId: msg.userImageBlobId, i2i: Boolean(msg.userImageI2i) } : null,
-    );
+    useApp.getState().setComposerShot(chat.id, messageShots(msg));
     requestAnimationFrame(() => inputRef.current?.focus());
   };
 
@@ -99,7 +84,7 @@ export function ChatPane({ chat }: { chat: Chat }) {
   const send = () => {
     const t = draft;
     if (editUser) {
-      const pending = shot?.blobId ? { blobId: shot.blobId, i2i: shot.i2i } : null;
+      const pending = shots.length ? shots : null;
       if (!t.trim() && !pending) {
         useApp.getState().toast("写点字，或留一张图");
         return;
@@ -112,7 +97,7 @@ export function ChatPane({ chat }: { chat: Chat }) {
       return;
     }
     useApp.getState().setComposerDraft(chat.id, "");
-    const pending = shot?.blobId ? { blobId: shot.blobId, i2i: shot.i2i } : undefined;
+    const pending = shots.length ? shots : undefined;
     useApp.getState().setComposerShot(chat.id, null);
     void sendUser(chat.id, t, pending);
   };
@@ -258,30 +243,32 @@ export function ChatPane({ chat }: { chat: Chat }) {
             ) : null}
           </div>
         ) : null}
-        {shot?.blobId ? (
-          <div className="mb-2 ml-11 flex items-end gap-2">
-            <div className="relative">
-              {shotUrl ? (
-                <ZoomImg src={shotUrl} className="h-24 w-20 rounded-[14px] object-cover" />
-              ) : (
-                <div className="h-24 w-20 rounded-[14px] bg-dim" />
-              )}
-              <button
-                type="button"
-                className="absolute -right-1 -top-1 z-10 grid size-6 place-items-center rounded-full bg-card text-ink"
-                aria-label="去掉图片"
-                onClick={() => useApp.getState().setComposerShot(chat.id, null)}
-              >
-                <X className="size-3.5" />
-              </button>
-            </div>
-            <button
-              type="button"
-              className={`rounded-full border px-2.5 py-1 text-[12px] ${shot.i2i ? "border-primary bg-primary text-on-primary" : "border-line text-muted"}`}
-              onClick={() => useApp.getState().setComposerShot(chat.id, { blobId: shot.blobId, i2i: !shot.i2i })}
-            >
-              以图生图
-            </button>
+        {shots.length ? (
+          <div className="mb-2 ml-11 flex gap-2 overflow-x-auto pb-1">
+            {shots.map((shot, i) => (
+              <div key={`${shot.blobId}-${i}`} className="flex shrink-0 flex-col items-center gap-1">
+                <ComposerThumb
+                  blobId={shot.blobId}
+                  onRemove={() => {
+                    const next = shots.filter((_, at) => at !== i);
+                    useApp.getState().setComposerShot(chat.id, next.length ? next : null);
+                  }}
+                />
+                <button
+                  type="button"
+                  className={`rounded-full border px-2.5 py-1 text-[12px] ${shot.i2i ? "border-primary bg-primary text-on-primary" : "border-line text-muted"}`}
+                  onClick={() => {
+                    const on = !shot.i2i;
+                    useApp.getState().setComposerShot(
+                      chat.id,
+                      shots.map((s, at) => ({ ...s, i2i: on && at === i })),
+                    );
+                  }}
+                >
+                  以图生图
+                </button>
+              </div>
+            ))}
           </div>
         ) : null}
         <div className="flex items-end gap-2">
@@ -312,21 +299,10 @@ export function ChatPane({ chat }: { chat: Chat }) {
             className="max-h-32 min-h-[46px] flex-1 resize-none rounded-full border border-line bg-card px-4 py-3 text-[14px] outline-none"
           />
           <ImagePick
-            onFile={(file) => {
-              void compressRef(file, 1024, 0.85).then(async (blob) => {
-                const id = await saveBlob(blob);
-                useApp.getState().setComposerShot(chat.id, { blobId: id, i2i: false });
-              });
-            }}
-            onBlob={async (blobId) => {
-              const blob = await getImage(blobId);
-              if (!blob) {
-                useApp.getState().toast("这张图已经不在了");
-                return;
-              }
-              const id = await saveBlob(blob);
-              useApp.getState().setComposerShot(chat.id, { blobId: id, i2i: false });
-            }}
+            multiple
+            onFile={() => undefined}
+            onFiles={(files) => void addChatShots(chat.id, files, null)}
+            onBlobs={(ids) => void addChatShots(chat.id, null, ids)}
             render={(open) => (
               <button
                 type="button"
@@ -358,6 +334,65 @@ export function ChatPane({ chat }: { chat: Chat }) {
   );
 }
 
+function ComposerThumb({ blobId, onRemove }: { blobId: string; onRemove: () => void }) {
+  const [url, setUrl] = useState<string | null>(null);
+  useEffect(() => {
+    let dead = false;
+    void imageUrl(blobId).then((u) => {
+      if (!dead) setUrl(u);
+    });
+    return () => {
+      dead = true;
+    };
+  }, [blobId]);
+  return (
+    <div className="relative">
+      {url ? (
+        <ZoomImg src={url} className="h-24 w-20 rounded-[14px] object-cover" />
+      ) : (
+        <div className="h-24 w-20 rounded-[14px] bg-dim" />
+      )}
+      <button
+        type="button"
+        className="absolute -right-1 -top-1 z-10 grid size-6 place-items-center rounded-full bg-card text-ink"
+        aria-label="去掉图片"
+        onClick={onRemove}
+      >
+        <X className="size-3.5" />
+      </button>
+    </div>
+  );
+}
+
+async function addChatShots(chatId: string, files: File[] | null, blobIds: string[] | null) {
+  const room = CHAT_SHOT_MAX - (useApp.getState().composerShots[chatId]?.length ?? 0);
+  if (room <= 0) {
+    useApp.getState().toast("最多 9 张");
+    return;
+  }
+  const wanted = files ? files.length : (blobIds?.length ?? 0);
+  if (wanted > room) useApp.getState().toast("最多 9 张");
+  const added: UserShot[] = [];
+  if (files) {
+    for (const file of files.slice(0, room)) {
+      const blob = await compressRef(file, 1024, 0.85);
+      added.push({ blobId: await saveBlob(blob), i2i: false });
+    }
+  } else {
+    for (const id of (blobIds ?? []).slice(0, room)) {
+      const blob = await getImage(id);
+      if (!blob) continue;
+      added.push({ blobId: await saveBlob(blob), i2i: false });
+    }
+    if (!added.length) {
+      useApp.getState().toast("这张图已经不在了");
+      return;
+    }
+  }
+  const latest = useApp.getState().composerShots[chatId] ?? [];
+  useApp.getState().setComposerShot(chatId, [...latest, ...added].slice(0, CHAT_SHOT_MAX));
+}
+
 function UserShot({ blobId, i2i }: { blobId: string; i2i?: boolean }) {
   const [url, setUrl] = useState<string | null>(null);
   useEffect(() => {
@@ -370,7 +405,7 @@ function UserShot({ blobId, i2i }: { blobId: string; i2i?: boolean }) {
     };
   }, [blobId]);
   return (
-    <div className="mb-1.5 flex max-w-[85%] flex-col items-end">
+    <div className="flex flex-col items-end">
       {url ? (
         <ZoomImg src={url} className="h-28 max-w-full rounded-[14px] object-cover" />
       ) : (
@@ -419,7 +454,13 @@ function Bubble({
   if (msg.role === "user") {
     return (
       <div className="mb-4 flex flex-col items-end">
-        {msg.userImageBlobId ? <UserShot blobId={msg.userImageBlobId} i2i={msg.userImageI2i} /> : null}
+        {messageShots(msg).length ? (
+          <div className="mb-1.5 flex max-w-[85%] flex-wrap justify-end gap-1.5">
+            {messageShots(msg).map((s, i) => (
+              <UserShot key={`${s.blobId}-${i}`} blobId={s.blobId} i2i={s.i2i} />
+            ))}
+          </div>
+        ) : null}
         {msg.content.trim() ? (
           <div
             className={cn(

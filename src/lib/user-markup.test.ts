@@ -9,6 +9,8 @@ import {
   parseUserMarkup,
   previousRoundImagePrompt,
   shotAndResidual,
+  formatUserImageTurn,
+  messageShots,
   latestUserBefore,
 } from "./user-markup.ts";
 
@@ -185,5 +187,33 @@ describe("previousRoundImagePrompt", () => {
       { id: "a2", role: "assistant", images: [] },
     ];
     assert.equal(previousRoundImagePrompt(messages, "a2"), "");
+  });
+});
+
+describe("formatUserImageTurn", () => {
+  it("keeps the single-image wording", () => {
+    assert.match(formatUserImageTurn("看这张"), /这张图就是现在的画面/);
+    assert.match(formatUserImageTurn(""), /发来一张图/);
+  });
+
+  it("numbers more than one image", () => {
+    assert.match(formatUserImageTurn("看这些", [], 3), /发来 3 张图/);
+    assert.match(formatUserImageTurn("", [], 2), /按编号/);
+  });
+
+  it("reads an old single image and keeps one lit", () => {
+    assert.deepEqual(messageShots({ userImageBlobId: "a", userImageI2i: true }), [{ blobId: "a", i2i: true }]);
+    assert.deepEqual(
+      messageShots({
+        userImages: [
+          { blobId: "a", i2i: true },
+          { blobId: "b", i2i: true },
+        ],
+      }),
+      [
+        { blobId: "a", i2i: true },
+        { blobId: "b", i2i: false },
+      ],
+    );
   });
 });

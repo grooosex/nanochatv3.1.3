@@ -24,6 +24,7 @@ import type {
   ImageParams,
   Settings,
   TabId,
+  UserShot,
 } from "./types";
 import { normalizeChatMemory } from "./chat-memory";
 import { uid, sortHistoryNewestFirst } from "./utils";
@@ -164,7 +165,7 @@ interface UI {
     chatId: string;
     msgId: string;
     backup: string;
-    shotBackup: { blobId: string; i2i: boolean } | null;
+    shotBackup: UserShot[] | null;
   } | null;
 }
 
@@ -184,7 +185,7 @@ interface State {
   toasts: Toast[];
   ui: UI;
   composerDrafts: Record<string, string>;
-  composerShots: Record<string, { blobId: string; i2i: boolean }>;
+  composerShots: Record<string, UserShot[]>;
   hydrate: () => Promise<void>;
   toast: (text: string) => void;
   setUI: (p: Partial<UI>) => void;
@@ -237,7 +238,7 @@ interface State {
   deleteHistory: (id: string) => void;
   setCooldown: (until: number) => void;
   setComposerDraft: (chatId: string, text: string) => void;
-  setComposerShot: (chatId: string, shot: { blobId: string; i2i: boolean } | null) => void;
+  setComposerShot: (chatId: string, shots: UserShot[] | null) => void;
 }
 
 const ui0 = (): UI => ({
@@ -1022,10 +1023,10 @@ export const useApp = create<State>((set, get) => ({
     });
   },
 
-  setComposerShot: (chatId, shot) => {
+  setComposerShot: (chatId, shots) => {
     set((s) => {
       const composerShots = { ...s.composerShots };
-      if (shot?.blobId) composerShots[chatId] = { blobId: shot.blobId, i2i: shot.i2i };
+      if (shots?.length) composerShots[chatId] = shots;
       else delete composerShots[chatId];
       void db.kv.put({ key: "composerShots", value: composerShots });
       return { composerShots };
@@ -1048,18 +1049,31 @@ function dropDrafts(drafts: Record<string, string>, ids: Set<string>) {
   return next;
 }
 
-function parseComposerShots(raw: unknown): Record<string, { blobId: string; i2i: boolean }> {
+function parseOneShot(v: unknown): UserShot | null {
+  if (!v || typeof v !== "object") return null;
+  const row = v as { blobId?: unknown; i2i?: unknown };
+  if (typeof row.blobId !== "string" || !row.blobId) return null;
+  return { blobId: row.blobId, i2i: row.i2i === true };
+}
+
+function parseComposerShots(raw: unknown): Record<string, UserShot[]> {
   if (!raw || typeof raw !== "object" || Array.isArray(raw)) return {};
-  const out: Record<string, { blobId: string; i2i: boolean }> = {};
+  const out: Record<string, UserShot[]> = {};
   for (const [k, v] of Object.entries(raw as Record<string, unknown>)) {
-    if (!k || !v || typeof v !== "object") continue;
-    const row = v as { blobId?: unknown; i2i?: unknown };
-    if (typeof row.blobId === "string" && row.blobId) out[k] = { blobId: row.blobId, i2i: row.i2i === true };
+    if (!k) continue;
+    const rows = Array.isArray(v) ? v.map(parseOneShot) : [parseOneShot(v)];
+    let lit = false;
+    const shots = rows.filter((s): s is UserShot => !!s).map((s) => {
+      const i2i = s.i2i && !lit;
+      if (i2i) lit = true;
+      return { blobId: s.blobId, i2i };
+    });
+    if (shots.length) out[k] = shots;
   }
   return out;
 }
 
-function dropShots(shots: Record<string, { blobId: string; i2i: boolean }>, ids: Set<string>) {
+function dropShots(shots: Record<string, UserShot[]>, ids: Set<string>) {
   const next = { ...shots };
   for (const id of ids) delete next[id];
   return next;
@@ -1097,6 +1111,7 @@ function blobInUse(s: State, blobId: string, skipFav?: string) {
     if (c.characters.some((ch) => ch.lookBlobId === blobId)) return true;
     for (const m of c.messages) {
       if (m.userImageBlobId === blobId) return true;
+      if (m.userImages?.some((s) => s.blobId === blobId)) return true;
       if (m.images.some((g) => g.blobId === blobId)) return true;
     }
   }

@@ -1,4 +1,5 @@
 import { replyContextText, replyStoryText } from "./reply-markup.ts";
+import type { UserShot } from "./types";
 
 export const OPENING_USER = "（开始场景，请角色先开口）";
 export const CONTINUE_USER =
@@ -94,16 +95,67 @@ export function formatUserForChat(raw: string, standing: string[] = []): string 
   return parts.join("\n\n");
 }
 
-export function formatUserImageTurn(raw: string, standing: string[] = []): string {
+export const CHAT_SHOT_MAX = 9;
+
+export function messageShots(m: {
+  userImages?: UserShot[];
+  userImageBlobId?: string;
+  userImageI2i?: boolean;
+}): UserShot[] {
+  if (m.userImages?.length) {
+    let lit = false;
+    return m.userImages
+      .filter((s) => s.blobId)
+      .map((s) => {
+        const i2i = s.i2i === true && !lit;
+        if (i2i) lit = true;
+        return { blobId: s.blobId, i2i };
+      });
+  }
+  if (m.userImageBlobId) return [{ blobId: m.userImageBlobId, i2i: m.userImageI2i === true }];
+  return [];
+}
+
+export function stampShots<T extends { userImages?: UserShot[]; userImageBlobId?: string; userImageI2i?: boolean }>(
+  msg: T,
+  shots: UserShot[],
+): T {
+  const next = { ...msg };
+  delete next.userImages;
+  delete next.userImageBlobId;
+  delete next.userImageI2i;
+  let lit = false;
+  const userImages = shots
+    .filter((s) => s.blobId)
+    .map((s) => {
+      const i2i = s.i2i === true && !lit;
+      if (i2i) lit = true;
+      return { blobId: s.blobId, i2i };
+    });
+  if (!userImages.length) return next;
+  next.userImages = userImages;
+  next.userImageBlobId = userImages[0].blobId;
+  next.userImageI2i = userImages[0].i2i;
+  return next;
+}
+
+export function formatUserImageTurn(raw: string, standing: string[] = [], count = 1): string {
   const t = (raw || "").trim();
+  const n = Math.max(1, count);
+  const extra = standing.map((s) => s.trim()).filter(Boolean);
   if (!t) {
     const frame =
-      "用户这轮发来一张图，没有写字。图就在这条消息后面。这张图就是现在正在发生的画面：她在做什么、什么姿势、在什么地方，都认这张图。看着这张图回复，不要当成没说话，也不要沿用上一拍自己推进剧情。";
-    const extra = standing.map((s) => s.trim()).filter(Boolean);
+      n > 1
+        ? `用户这轮发来 ${n} 张图，没有写字。图按编号附在这条消息后面。这些都是这一轮的画面，不要当成外貌备忘。能看成同一刻的不同角度，就写成同一刻。明显是前后不同的时刻，就按编号写中间是怎么过去的，不要从最后一张直接起笔，也不要沿用上一拍自己推进的动作。看着这些图回复，不要当成没说话。`
+        : "用户这轮发来一张图，没有写字。图就在这条消息后面。这张图就是现在正在发生的画面：她在做什么、什么姿势、在什么地方，都认这张图。看着这张图回复，不要当成没说话，也不要沿用上一拍自己推进剧情。";
     return extra.length ? `${frame}\n\n${chatAuthorBlock(extra)}` : frame;
   }
   const body = formatUserForChat(t, standing);
-  return `${body}\n\n用户这轮还发来一张图，图就在这条消息后面。上面的字是对着这张图说的。这张图就是现在的画面，不要沿用上一拍的旧动作。她听见的话也是在问或说这张图里的事。`;
+  const tail =
+    n > 1
+      ? `用户这轮还发来 ${n} 张图，按编号附在这条消息后面。上面的字是对着这些图说的。这些都是这一轮的画面，不要当成外貌备忘，也不要沿用上一拍的旧动作。能看成同一刻的不同角度，就写成同一刻。明显是前后不同的时刻，就按编号写中间是怎么过去的，不要从最后一张直接起笔。她听见的话也是在问或说这些图里的事。`
+      : "用户这轮还发来一张图，图就在这条消息后面。上面的字是对着这张图说的。这张图就是现在的画面，不要沿用上一拍的旧动作。她听见的话也是在问或说这张图里的事。";
+  return `${body}\n\n${tail}`;
 }
 
 export function formatUserForImage(raw: string, standing: string[] = []): string {

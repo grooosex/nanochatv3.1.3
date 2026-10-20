@@ -15,13 +15,19 @@ export type StoredPick = {
 
 export function ImagePick({
   onFile,
+  onFiles,
   onBlob,
+  onBlobs,
   onStored,
+  multiple = false,
   render,
 }: {
   onFile: (file: File) => void;
+  onFiles?: (files: File[]) => void;
   onBlob?: (blobId: string) => void | Promise<void>;
+  onBlobs?: (blobIds: string[]) => void | Promise<void>;
   onStored?: (pick: StoredPick) => void;
+  multiple?: boolean;
   render: (open: () => void) => ReactNode;
 }) {
   const album = useRef<HTMLInputElement>(null);
@@ -29,8 +35,19 @@ export function ImagePick({
   const [open, setOpen] = useState<"menu" | "hist" | "fav" | null>(null);
 
   const take = (list: FileList | null) => {
-    const picked = list?.[0];
-    if (!picked) return;
+    const files = [...(list ?? [])];
+    if (!files.length) return;
+    if (multiple && onFiles) {
+      const images = files.filter(isImageFile);
+      if (!images.length) {
+        useApp.getState().toast("请选择图片");
+        return;
+      }
+      if (images.length < files.length) useApp.getState().toast("已跳过不是图片的文件");
+      onFiles(images);
+      return;
+    }
+    const picked = files[0];
     if (!isImageFile(picked)) {
       useApp.getState().toast("请选择图片");
       return;
@@ -47,6 +64,7 @@ export function ImagePick({
         ref={album}
         type="file"
         accept="image/*"
+        multiple={multiple}
         className="hidden"
         onChange={(e) => {
           take(e.target.files);
@@ -57,6 +75,7 @@ export function ImagePick({
         ref={file}
         type="file"
         accept="*/*"
+        multiple={multiple}
         className="hidden"
         onChange={(e) => {
           take(e.target.files);
@@ -99,7 +118,9 @@ export function ImagePick({
               onBack={() => setOpen("menu")}
               onClose={close}
               onBlob={onBlob}
+              onBlobs={onBlobs}
               onStored={onStored}
+              multiple={multiple}
             />,
             document.body,
           )
@@ -143,18 +164,22 @@ function LibrarySheet({
   onBack,
   onClose,
   onBlob,
+  onBlobs,
   onStored,
+  multiple,
 }: {
   kind: "hist" | "fav";
   onBack: () => void;
   onClose: () => void;
   onBlob?: (blobId: string) => void | Promise<void>;
+  onBlobs?: (blobIds: string[]) => void | Promise<void>;
   onStored?: (pick: StoredPick) => void;
+  multiple: boolean;
 }) {
   const history = useApp((s) => s.history);
   const favorites = useApp((s) => s.favorites);
   const favGroups = useApp((s) => s.favGroups);
-  const [selected, setSelected] = useState<string | null>(null);
+  const [selected, setSelected] = useState<string[]>([]);
   const [fold, setFold] = useState<Record<string, boolean>>({});
   const [busy, setBusy] = useState(false);
 
@@ -163,28 +188,42 @@ function LibrarySheet({
   const favsOf = (groupId: string | null) =>
     ordered(favorites.filter((f) => (f.groupId ?? null) === groupId && f.blobId));
 
-  const toggle = (id: string) => setSelected((cur) => (cur === id ? null : id));
+  const toggle = (id: string) =>
+    setSelected((cur) => {
+      if (!multiple) return cur[0] === id ? [] : [id];
+      const at = cur.indexOf(id);
+      if (at >= 0) return cur.filter((x) => x !== id);
+      return [...cur, id];
+    });
 
   const confirm = async () => {
-    if (!selected || busy) return;
+    if (!selected.length || busy) return;
     setBusy(true);
     try {
-      if (kind === "hist") {
-        const item = pics.find((h) => h.id === selected);
-        if (!item?.blobId || !(await getImage(item.blobId))) {
+      const resolve = (id: string) =>
+        kind === "hist" ? pics.find((h) => h.id === id) : favorites.find((f) => f.id === id);
+      if (!multiple) {
+        const item = resolve(selected[0]);
+        const blobId = item?.blobId;
+        if (!blobId || !(await getImage(blobId))) {
           useApp.getState().toast("这张图已经不在了");
           return;
         }
-        if (onStored) onStored({ blobId: item.blobId, params: item.params, seed: item.seed });
-        else await onBlob?.(item.blobId);
+        if (onStored && item && "params" in item) {
+          const seed = "seed" in item ? item.seed : undefined;
+          onStored({ blobId, params: item.params, seed });
+        } else await onBlob?.(blobId);
       } else {
-        const fav = favorites.find((f) => f.id === selected);
-        if (!fav?.blobId || !(await getImage(fav.blobId))) {
-          useApp.getState().toast("这张图已经不在了");
-          return;
+        const blobIds: string[] = [];
+        for (const id of selected) {
+          const blobId = resolve(id)?.blobId;
+          if (!blobId || !(await getImage(blobId))) {
+            useApp.getState().toast("这张图已经不在了");
+            return;
+          }
+          blobIds.push(blobId);
         }
-        if (onStored) onStored({ blobId: fav.blobId, params: fav.params });
-        else await onBlob?.(fav.blobId);
+        await onBlobs?.(blobIds);
       }
       onClose();
     } finally {
@@ -223,7 +262,8 @@ function LibrarySheet({
                     blobId={f.blobId}
                     w={f.params.width}
                     h={f.params.height}
-                    active={selected === f.id}
+                    active={selected.includes(f.id)}
+                    order={multiple ? selected.indexOf(f.id) + 1 : 0}
                     onClick={() => toggle(f.id)}
                   />
                 ))}
@@ -246,7 +286,7 @@ function LibrarySheet({
           <button
             type="button"
             className="text-[15px] font-medium text-primary disabled:opacity-40"
-            disabled={!selected || busy}
+            disabled={!selected.length || busy}
             onClick={() => void confirm()}
           >
             确定
@@ -262,7 +302,8 @@ function LibrarySheet({
                     blobId={h.blobId}
                     w={h.width}
                     h={h.height}
-                    active={selected === h.id}
+                    active={selected.includes(h.id)}
+                    order={multiple ? selected.indexOf(h.id) + 1 : 0}
                     onClick={() => toggle(h.id)}
                   />
                 ))}
@@ -280,7 +321,8 @@ function LibrarySheet({
                     blobId={f.blobId}
                     w={f.params.width}
                     h={f.params.height}
-                    active={selected === f.id}
+                    active={selected.includes(f.id)}
+                    order={multiple ? selected.indexOf(f.id) + 1 : 0}
                     onClick={() => toggle(f.id)}
                   />
                 ))}
@@ -309,12 +351,14 @@ function StoredThumb({
   w,
   h,
   active,
+  order = 0,
   onClick,
 }: {
   blobId?: string;
   w: number;
   h: number;
   active: boolean;
+  order?: number;
   onClick: () => void;
 }) {
   const [url, setUrl] = useState<string | null>(null);
@@ -327,13 +371,20 @@ function StoredThumb({
   const width = w > 0 ? w : 832;
   const height = h > 0 ? h : 1216;
   return (
-    <button
-      type="button"
-      className={`overflow-hidden rounded-[8px] bg-dim ${active ? "ring-2 ring-red-500 ring-offset-1 ring-offset-bg" : ""}`}
-      style={{ aspectRatio: `${width} / ${height}` }}
-      onClick={onClick}
-    >
-      {url ? <img src={url} alt="" className="size-full object-contain" /> : null}
-    </button>
+    <div className="relative">
+      <button
+        type="button"
+        className={`w-full overflow-hidden rounded-[8px] bg-dim ${active ? "ring-2 ring-red-500 ring-offset-1 ring-offset-bg" : ""}`}
+        style={{ aspectRatio: `${width} / ${height}` }}
+        onClick={onClick}
+      >
+        {url ? <img src={url} alt="" className="size-full object-contain" /> : null}
+      </button>
+      {order > 0 ? (
+        <span className="pointer-events-none absolute right-1 top-1 grid size-5 place-items-center rounded-full bg-red-500 text-[11px] font-medium text-white">
+          {order}
+        </span>
+      ) : null}
+    </div>
   );
 }

@@ -125,6 +125,11 @@ export interface GenImage {
   createdAt: number;
 }
 
+export interface UserShot {
+  blobId: string;
+  i2i: boolean;
+}
+
 export interface ChatMessage {
   id: string;
   role: "user" | "assistant" | "narrator";
@@ -133,6 +138,7 @@ export interface ChatMessage {
   content: string;
   images: GenImage[];
   createdAt: number;
+  userImages?: UserShot[];
   userImageBlobId?: string;
   userImageI2i?: boolean;
 }

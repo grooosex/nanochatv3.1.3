@@ -22,12 +22,12 @@ import { grokStream } from "@/lib/grok-client";
 import { sanitizeNaiTags, extractGrokTail, type PresenceUpdate } from "@/lib/nai-tags";
 import { COOLDOWN_MS } from "@/lib/constants";
 import { useApp } from "@/lib/store";
-import { shotAndResidual, previousRoundImagePrompt, latestUserBefore, standingDirectives, formatUserForChat, OPENING_USER } from "@/lib/user-markup";
+import { shotAndResidual, previousRoundImagePrompt, latestUserBefore, standingDirectives, formatUserForChat, OPENING_USER, messageShots, stampShots } from "@/lib/user-markup";
 import { presetStyle } from "@/lib/st-preset";
 import { applySnaps, foldCoveredEnd, memoryCaughtUp, memoryFailReason, pushSnap, rewindSnaps } from "@/lib/chat-memory";
 import { chatImageSystem } from "@/lib/prompts";
 import { resolveImageWrite } from "@/lib/image-ai";
-import type { Chat, ChatMessage, GenImage, ImageGenSource } from "@/lib/types";
+import type { Chat, ChatMessage, GenImage, ImageGenSource, UserShot } from "@/lib/types";
 import { randomSeed, uid } from "@/lib/utils";
 
 const aborts = new Map<string, AbortController>();
@@ -65,14 +65,10 @@ export async function sendOpening(id: string) {
   await runReply(id, null, true);
 }
 
-export async function sendUser(id: string, text: string, shot?: { blobId: string; i2i: boolean }) {
+export async function sendUser(id: string, text: string, shots?: UserShot[]) {
   const t = text.trim();
   abortChat(id);
-  const msg = makeUserMessage(t);
-  if (shot?.blobId) {
-    msg.userImageBlobId = shot.blobId;
-    msg.userImageI2i = shot.i2i;
-  }
+  const msg = shots?.length ? stampShots(makeUserMessage(t), shots) : makeUserMessage(t);
   patch(id, (c) => ({ ...c, messages: [...c.messages, msg] }));
   await runReply(id, t, false);
 }
@@ -468,7 +464,7 @@ function turnI2iBlob(c: Chat, msgId: string) {
   const idx = c.messages.findIndex((m) => m.id === msgId);
   for (let i = idx - 1; i >= 0; i--) {
     const m = c.messages[i];
-    if (m.role === "user") return m.userImageI2i ? m.userImageBlobId : undefined;
+    if (m.role === "user") return messageShots(m).find((s) => s.i2i)?.blobId;
   }
   return undefined;
 }
@@ -659,12 +655,7 @@ export async function runManualMemory(id: string, mode: "current" | "all") {
   }
 }
 
-export async function editMessage(
-  id: string,
-  msgId: string,
-  text: string,
-  shot?: { blobId: string; i2i: boolean } | null,
-) {
+export async function editMessage(id: string, msgId: string, text: string, shots?: UserShot[] | null) {
   const c = chat(id);
   if (!c) return;
   const idx = c.messages.findIndex((m) => m.id === msgId);
@@ -673,14 +664,7 @@ export async function editMessage(
   if (msg.role === "user") {
     abortChat(id);
     bumpMemoryEpoch(id);
-    const next: ChatMessage = { ...msg, content: text.trim() };
-    if (shot === null) {
-      delete next.userImageBlobId;
-      delete next.userImageI2i;
-    } else if (shot) {
-      next.userImageBlobId = shot.blobId;
-      next.userImageI2i = shot.i2i;
-    }
+    const next = stampShots({ ...msg, content: text.trim() }, shots ?? []);
     patch(id, (ch) => ({
       ...ch,
       messages: [...ch.messages.slice(0, idx), next],

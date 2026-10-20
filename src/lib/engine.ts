@@ -1,7 +1,7 @@
 import { grokOnce, grokStream } from "./grok-client";
 import { chatContextBlock, fieldPolishHint, groupFormatHint, IMAGE_BG_RULES, IMAGE_MULTI_RULES, IMAGE_SHOT_RULES, imageApplyRules, imageLengthRules, imageWriteMaxTokens, multiInsertInstruction, roleSnapshot, splitChatPrompt, statusBarFor, voicePolishExtra } from "./prompts";
 import { buildPolishUserContent, extractFieldText, parsePolishJson, stripRoleOutput } from "./role-polish";
-import { formatUserForChat, formatUserImageTurn, standingDirectives } from "./user-markup";
+import { formatUserForChat, formatUserImageTurn, messageShots, standingDirectives } from "./user-markup";
 import { stripSpeakerPrefix } from "./rp-text";
 import { replyContextText, replyStoryText } from "./reply-markup.ts";
 import { resolveImageWrite, imageWriteFields } from "./image-ai.ts";
@@ -52,25 +52,42 @@ export async function decorateVision<T extends { role: string; content: string }
   }
   const parts: VisionPart[] = [{ type: "text", text: msgs[last].content }];
   let added = false;
-  if (src?.userImageBlobId) {
-    const url = await blobDataUrl(src.userImageBlobId);
-    if (url) {
+  const shots = src ? messageShots(src) : [];
+  const loaded: string[] = [];
+  for (const shot of shots) {
+    const url = await blobDataUrl(shot.blobId);
+    if (url) loaded.push(url);
+  }
+  if (loaded.length === 1) {
+    parts.push({
+      type: "text",
+      text: "下面这张就是用户这一轮发来的图，也就是现在的画面。用户的字是对着这张图说的。不要把它当成外貌备忘，也不要沿用上一拍的旧动作。",
+    });
+    parts.push({ type: "image_url", image_url: { url: loaded[0] } });
+    added = true;
+  } else if (loaded.length > 1) {
+    parts.push({
+      type: "text",
+      text: "这一轮的图按编号排列。能看成同一刻的不同角度，就写成同一刻。明显是前后不同的时刻，就按编号写中间是怎么过去的，不要从最后一张直接起笔，也不要沿用上一拍的旧动作。",
+    });
+    loaded.forEach((url, i) => {
       parts.push({
         type: "text",
-        text: "下面这张就是用户这一轮发来的图，也就是现在的画面。用户的字是对着这张图说的。不要把它当成外貌备忘，也不要沿用上一拍的旧动作。",
+        text: `下面这张是用户这一轮发来的第 ${i + 1} 张，共 ${loaded.length} 张。不要把它当成外貌备忘。`,
       });
       parts.push({ type: "image_url", image_url: { url } });
-      added = true;
-    }
+    });
+    added = true;
   }
   for (const c of chat.characters) {
     if (!c.lookBlobId) continue;
     const url = await blobDataUrl(c.lookBlobId);
     if (!url) continue;
     const name = c.name.trim() || "角色";
+    const note = loaded.length > 1 ? "它没有编号，不算进上面这一轮的图。" : "";
     parts.push({
       type: "text",
-      text: `下面这张是${name}的外貌备忘，不是用户这轮发来的图，也不是现在的剧情画面。人设里「外貌备忘」写的就是她；这张图是那一栏的样子，用来认长相、发色瞳色、体型和衣服。剧情里已经换过的衣服或发型，以剧情为准，不要被这张图改回去。`,
+      text: `下面这张是${name}的外貌备忘，不是用户这轮发来的图，也不是现在的剧情画面。人设里「外貌备忘」写的就是她；这张图是那一栏的样子，用来认长相、发色瞳色、体型和衣服。剧情里已经换过的衣服或发型，以剧情为准，不要被这张图改回去。${note}`,
     });
     parts.push({ type: "image_url", image_url: { url } });
     added = true;
@@ -97,8 +114,11 @@ export function foldWindow() {
 }
 
 function userHistoryContent(m: ChatMessage, last: boolean, standing: string[]) {
-  if (m.userImageBlobId && last) return formatUserImageTurn(m.content, standing);
-  if (m.userImageBlobId && !m.content.trim()) return "用户那一轮发过一张图，没有写字。那一轮已经过去。";
+  const n = messageShots(m).length;
+  if (n && last) return formatUserImageTurn(m.content, standing, n);
+  if (n && !m.content.trim()) {
+    return n > 1 ? `用户那一轮发过 ${n} 张图，没有写字。那一轮已经过去。` : "用户那一轮发过一张图，没有写字。那一轮已经过去。";
+  }
   return formatUserForChat(m.content, standing);
 }
 
